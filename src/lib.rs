@@ -344,7 +344,8 @@ impl<T: Send> Deque<T> {
             return None;
         }
 
-        let n = size - size / 2;
+        // let n = size - size / 2;
+        let n = size / 2;
         to.reserve(n as usize);
 
         for idx in t..t+n {
