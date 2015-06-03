@@ -260,3 +260,61 @@ fn no_starvation() {
         thread.join()
     }
 }
+
+#[test]
+fn test_batch_steal() {
+    use std::thread;
+
+    const AMT: usize = 1000000;
+
+    let pool = BufferPool::new();
+    let (w, s) = pool.deque();
+
+    let t = thread::spawn(move|| {
+        let mut buf = Vec::new();
+
+        let mut left = AMT;
+        while left > 0 {
+            match s.steal_half(&mut buf) {
+                Some(n) => left -= n,
+                None => {}
+            }
+        }
+    });
+
+    for _ in 0..AMT {
+        w.push(1);
+    }
+
+    t.join().unwrap();
+}
+
+#[test]
+fn test_push_all() {
+    use std::thread;
+    use std::iter::repeat;
+
+    const AMT: usize = 1000000;
+
+    let pool = BufferPool::new();
+    let (w, s) = pool.deque();
+
+    let t = thread::spawn(move|| {
+        let mut buf = Vec::new();
+
+        let mut left = AMT;
+        while left > 0 {
+            match s.steal_half(&mut buf) {
+                Some(n) => left -= n,
+                None => {}
+            }
+        }
+    });
+
+    for _ in 0..AMT/1000 {
+        let mut buf = repeat(1).take(1000).collect::<Vec<usize>>();
+        w.push_all(&mut buf);
+    }
+
+    t.join().unwrap();
+}

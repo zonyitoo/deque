@@ -41,7 +41,7 @@
 //!     let mut stealer2 = stealer.clone();
 //!     stealer2.steal();
 
-#![feature(alloc)]
+#![feature(alloc, collections_drain)]
 
 extern crate alloc;
 
@@ -190,6 +190,11 @@ impl<T: Send> Worker<T> {
     pub fn push(&self, t: T) {
         unsafe { self.deque.push(t) }
     }
+
+    pub fn push_all(&self, datas: &mut Vec<T>) {
+        unsafe { self.deque.push_all(datas) }
+    }
+
     /// Pops data off the front of the work queue, returning `None` on an empty
     /// queue.
     pub fn pop(&self) -> Option<T> {
@@ -208,6 +213,10 @@ impl<T: Send> Stealer<T> {
     /// Steals work off the end of the queue (opposite of the worker's end)
     pub fn steal(&self) -> Stolen<T> {
         unsafe { self.deque.steal() }
+    }
+
+    pub fn steal_half(&self, to: &mut Vec<T>) -> Option<usize> {
+        unsafe { self.deque.steal_half(to) }
     }
 
     /// Gets access to the buffer pool that this stealer is attached to. This
@@ -252,6 +261,25 @@ impl<T: Send> Deque<T> {
         }
         (*a).put(b, data);
         self.bottom.store(b + 1, SeqCst);
+    }
+
+    unsafe fn push_all(&self, datas: &mut Vec<T>) {
+        let mut b = self.bottom.load(SeqCst);
+        let t = self.top.load(SeqCst);
+        let mut a = self.array.load(SeqCst);
+        let size = b - t + datas.len() as isize;
+        if size >= (*a).size() - 1 {
+            // You won't find this code in the chase-lev deque paper. This is
+            // alluded to in a small footnote, however. We always free a buffer
+            // when growing in order to prevent leaks.
+            a = self.swap_buffer(b, a, (*a).resize(b, t, (b-t+datas.len() as isize) - size + 1));
+            b = self.bottom.load(SeqCst);
+        }
+        let n = datas.len();
+        for (idx, data) in datas.drain(..).enumerate() {
+            (*a).put(b + idx as isize, data);
+        }
+        self.bottom.store(b + n as isize, SeqCst);
     }
 
     unsafe fn pop(&self) -> Option<T> {
@@ -299,6 +327,37 @@ impl<T: Send> Deque<T> {
         } else {
             forget(data); // someone else stole this value
             Abort
+        }
+    }
+
+    unsafe fn steal_half(&self, to: &mut Vec<T>) -> Option<usize> {
+        let t = self.top.load(SeqCst);
+        let old = self.array.load(SeqCst);
+        let b = self.bottom.load(SeqCst);
+        let a = self.array.load(SeqCst);
+        let size = b - t;
+        if size <= 0 { return None }
+        if size % (*a).size() == 0 {
+            if a == old && t == self.top.load(SeqCst) {
+                return None;
+            }
+            return None;
+        }
+
+        let n = size - size / 2;
+        to.reserve(n as usize);
+
+        for idx in t..t+n {
+            to.push((*a).get(idx));
+        }
+
+        if self.top.compare_and_swap(t, t + n, SeqCst) == t {
+            return Some(n as usize);
+        } else {
+            // someone else stole those values
+            let l = to.len();
+            to.set_len(l - n as usize);
+            return None;
         }
     }
 
